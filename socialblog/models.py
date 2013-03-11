@@ -1,75 +1,28 @@
+# coding: utf-8
 from datetime import datetime
+from unidecode import unidecode
 
 from django.db import models
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.contenttypes import generic
+from django.contirb.contenttypes.models import ContentType
 from django.utils.translation import ugettext_lazy as _
-from django.db.models import permalink
+from django.utils.timezone import utc
+from django.utils.text import slugify
+#from django.db.models import signals
 
-from tagging.fields import TagField
-from tagging.models import Tag
-
-from django.contrib.auth.models import User
+from taggit.managers import TaggableManager
+from voter.models import RatingField
 
 try:
     from notification import models as notification
-    from django.db.models import signals
 except ImportError:
     notification = None
 
-try:
-    markup_choices = settings.WIKI_MARKUP_CHOICES  # reuse this for now; taken from wiki
-except AttributeError:
-    markup_choices = (
-        ('rst', _(u'reStructuredText')),
-        ('txl', _(u'Textile')),
-        ('mrk', _(u'Markdown')),
-    )
+from socialblog.settings import MARKUP_CHOICES
 
-class Post(models.Model):
-    """Post model."""
-    STATUS_CHOICES = (
-        (1, _('Draft')),
-        (2, _('Public')),
-    )
-    title           = models.CharField(_('title'), max_length=200)
-    slug            = models.SlugField(_('slug'))
-    author          = models.ForeignKey(User, related_name="added_posts", blank=True, null=True)
-    creator_ip      = models.IPAddressField(_("IP Address of the Post Creator"), blank=True, null=True)
-    body            = models.TextField(_('body'))
-    tease           = models.TextField(_('tease'), blank=True)
-    status          = models.IntegerField(_('status'), choices=STATUS_CHOICES, default=2)
-    allow_comments  = models.BooleanField(_('allow comments'), default=True)
-    publish         = models.DateTimeField(_('publish'), default=datetime.now)
-    created_at      = models.DateTimeField(_('created at'), default=datetime.now)
-    updated_at      = models.DateTimeField(_('updated at'))
-    markup          = models.CharField(_(u"Post Content Markup"), max_length=3,
-                              choices=markup_choices,
-                              null=True, blank=True)
-    tags            = TagField()
-    
-    class Meta:
-        verbose_name        = _('post')
-        verbose_name_plural = _('posts')
-        ordering            = ('-publish',)
-        get_latest_by       = 'publish'
-        unique_together     = ('author', 'slug')
+now = datetime.utcnow().replace(tzinfo=utc)
 
-    def __unicode__(self):
-        return self.title
-
-    @permalink
-    def get_absolute_url(self):
-        return ('blog_post', None, {
-            'username': self.author.username,
-            'year': self.publish.year,
-            'month': "%02d" % self.publish.month,
-            'slug': self.slug
-    })
-
-    def save(self):
-        self.updated_at = datetime.now()
-        super(Post, self).save()
 
 class Blog(models.Model):
     """
@@ -77,25 +30,145 @@ class Blog(models.Model):
     example: a group model has a blog that members can submit to.
     """
 
-    title           = models.CharField(_('title'), max_length=200)
-    slug            = models.SlugField(_('slug'))
-    content_type    = models.ForeignKey(ContentType)
-    object_id       = models.PositiveIntegerField()
-    content_object  = generic.GenericForeignKey()
-    created_at      = models.DateTimeField(_('created_at'), default=datetime.now)
+    title = models.CharField(_(u'Title'), max_length=200)
+    slug = models.SlugField(_(u'Slug'))
+    content_type = models.ForeignKey(ContentType)
+    object_id = models.PositiveIntegerField()
+    content_object = generic.GenericForeignKey()
+
+    created = models.DateTimeField(_('Created'), default=now())
 
     class Meta:
         # Enforce unique associations per object
         unique_together = (('title', 'content_type', 'object_id'),)
-        verbose_name = _('blog')
-        verbose_name_plural = _('blogs')
+        verbose_name = _(u'Blog')
+        verbose_name_plural = _(u'Blogs')
+
+    def __unicode__(self):
+        return self.title
+
+    @models.permalink
+    def get_absolute_url(self):
+        return ('socialblog-blog_detail', None, {
+            'content_type_id': self.content_type.id,
+            'object_id': self.object_id,
+            'slug': self.slug,
+            })
+
+    @models.permalink
+    def get_feed_url(self):
+        return ('socialblog-blog_feed', None, {
+            'content_type_id': self.content_type.id,
+            'object_id': self.object_id,
+            'slug': self.slug,
+            })
+
+
+class BlogUserAccess(models.Model):
+    blog = models.ForeignKey(Blog, verbose_name=_(u'Blog'), \
+        related_name='blog_user_access_list')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, \
+        verbose_name=_(u'User'), related_name='blog_user_access_list')
+    is_moderator = models.BooleanField(_(u'Is moderator'), default=False)
+    can_read = models.BooleanField(_(u'Can read'), default=True)
+    can_write = models.BooleanField(_(u'Can write'), default=False)
+
+
+class PostManager(models.Manager):
+
+    def public(self):
+        return self.get_query_set().filter(status=Post.IS_PUBLIC)
+
+
+class Post(models.Model):
+    """Post model."""
+    IS_DELETED = 0
+    IS_DRAFT = 1
+    IS_PUBLIC = 2
+
+    STATUS_CHOICES = (
+        (IS_DRAFT, _(u'Draft')),
+        (IS_PUBLIC, _(u'Public')),
+        (IS_DELETED, _(u'Deleted')),
+    )
+
+    blog = models.ForeignKey(Blog, verbose_name=_(u'Blog'), related_name='post_list')
+    title = models.CharField(_(u'Title'), max_length=200)
+    slug = models.SlugField(_(u'Slug'))
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="added_posts")
+    creator_ip = models.IPAddressField(_(u"IP Address of the Post Creator"), blank=True, null=True)
+    body = models.TextField(_(u'Body'))
+    tease = models.TextField(_(u'Tease'), blank=True)
+    status = models.IntegerField(_(u'Status'), choices=STATUS_CHOICES, default=IS_DRAFT)
+    allow_comments = models.BooleanField(_(u'Allow comments'), default=True)
+    comments_count = models.PositiveIntegerField(_(u'Comments Count'), default=0)
+    last_comment_datetime = models.DateTimeField(_(u'Date of Last Comment'), default=now())
+    markup = models.CharField(_(u"Post Content Markup"), max_length=3, \
+                                choices=MARKUP_CHOICES, null=True, blank=True)
+    publish = models.DateTimeField(_('Publish'), default=now())
+
+    created = models.DateTimeField(_(u'Created at'), default=now())
+    updated = models.DateTimeField(_(u'Updated at'), default=now())
+
+    tags = TaggableManager()
+    rating = RatingField(related_name="post_list")
+    rating_score = models.FloatField(_(u"Rating score"), default=0)
+
+    objects = PostManager()
+
+    class Meta:
+        verbose_name = _(u'Post')
+        verbose_name_plural = _(u'Posts')
+        ordering = ('-publish',)
+        get_latest_by = 'publish'
+        unique_together = ('author', 'slug')
+
+    def __unicode__(self):
+        return self.title
+
+    @models.permalink
+    def get_absolute_url(self):
+        return ('socialblog-post_detail', None, {
+            'content_type_id': self.blog.content_type.id,
+            'object_id': self.object_id,
+            'blog_slug': self.blog.slug,
+            'slug': self.slug,
+        })
+
+    def save(self, **kwargs):
+        self.updated = now()
+        if not self.pk:
+            super(Post, self).save(**kwargs)
+
+        if not self.slug:
+            self.slug = '%d-%s' % (self.pk, slugify(unidecode(self.title)))
+            self.slug = self.slug[:50]
+
+            super(Post, self).save(**kwargs)
+
+    @property
+    def is_public(self):
+        return self.status == self.IS_PUBLIC
+
+    def is_visible_for_user(self, user):
+        return self.is_public or self.author == user
+
+    def can_comment(self, user):
+        return self.allow_comments
+
+    def can_edit(self, user):
+        return user.is_authenticated() and (self.author == user or \
+            (self.blog and self.blog.blog_user_access_list.filter(user=user, is_moderator=True).exists()))
+
+    def get_owners(self):
+        return [self.author, ]
 
 
 # handle notification of new comments
-from threadedcomments.models import ThreadedComment
-def new_comment(sender, instance, **kwargs):
-    if isinstance(instance.content_object, Post):
-        post = instance.content_object
-        if notification:
-            notification.send([post.author], "blog_post_comment", {"user": instance.user, "post": post, "comment": instance})
-signals.post_save.connect(new_comment, sender=ThreadedComment)
+#from threadedcomments.models import ThreadedComment
+#def new_comment(sender, instance, **kwargs):
+#    if isinstance(instance.content_object, Post):
+#        post = instance.content_object
+#        if notification:
+#            notification.send([post.author], "blog_post_comment", {"user": instance.user, "post": post, "comment": instance})
+#signals.post_save.connect(new_comment, sender=ThreadedComment)

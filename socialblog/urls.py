@@ -1,31 +1,35 @@
-from django.conf.urls.defaults import *
+# coding: utf-8
 
-from blog import views, models
-from blog.forms import *
+from django.conf.urls import patterns, url
+
+from socialblog import views
+from socialblog.feeds import (BlogFeedAll, BlogFeedBlog, BlogFeedUser)
 
 
 urlpatterns = patterns('',
-    # blog post
-    url(r'^post/(?P<username>[-\w]+)/(?P<year>\d{4})/(?P<month>\d{2})/(?P<slug>[-\w]+)/$', 'blog.views.post', name='blog_post'),
+    # all posts across all blogs
+    url(r'^$', views.PostList.as_view(), name='socialblog-post_list'),
 
-    # all blog posts
-    url(r'^$', 'blog.views.blogs', name="blog_list_all"),
+    # all posts of a blog a.k.a. blog detail
+    url(r'^(?P<content_type_id>\d+)/(?P<object_id>\d+)/(?P<slug>[-\w]+)/$',
+        views.BlogDetail.as_view(), name='socialblog-blog_detail'),
 
-    # blog post for user
-    url(r'^posts/(?P<username>\w+)/$', 'blog.views.blogs', name='blog_list_user'),
+    # post detail
+    url(r'^(?P<content_type_id>\d+)/(?P<object_id>\d+)/(?P<blog_slug>[-\w]+)/(?P<slug>[-\w]+)/$',
+        views.PostDetail.as_view(), name='socialblog-post_detail'),
 
-    # your posts
-    url(r'^your_posts/$', 'blog.views.your_posts', name='blog_list_yours'),
+    # add/edit/delete post
+    url(r'^add/$', views.post_add, name='socialblog-post_add'),
+    url(r'^edit/(?P<object_id>\d+)/$', views.post_edit, name='socialblog-post_edit'),
+    url(r'^delete/(?P<object_id>\d+)/$', views.post_delete, name='socialblog-post_delete'),
+    url(r'^(?P<action>draft|public)/(?P<object_id>\d+)/$', views.post_change_status,
+        name='socialblog-post_change_status'),
 
-    # new blog post
-    url(r'^new/$', 'blog.views.new', name='blog_new'),
 
-    # edit blog post
-    url(r'^edit/(\d+)/$', 'blog.views.edit', name='blog_edit'),
-
-    #destory blog post
-    url(r'^destroy/(\d+)/$', 'blog.views.destroy', name='blog_destroy'),
-
-    # ajax validation
-    (r'^validate/$', 'ajax_validation.views.validate', {'form_class': BlogForm, 'callback': lambda request, *args, **kwargs: {'user': request.user}}, 'blog_form_validate'),
+    # feeds
+    url(r'^feed/posts/all/$', BlogFeedAll(), name='socialblog-post_list_feed'),
+    url(r'^feed/(?P<content_type_id>\d+)/(?P<object_id>\d+)/(?P<slug>[-\w]+)/$',
+        BlogFeedBlog, name='socialblog-blog_feed'),
+    url(r'^feed/posts/only/(?P<username>[\w\._\-]+)/$', BlogFeedUser(),
+        name='socialblog-user_post_list_feed'),
 )

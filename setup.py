@@ -13,9 +13,9 @@ setup(
     name = "django-socialblog",
     version = "0.0.1",
     description = "A reusable multi-user blogging platform for django social applications",
-    author = "Greg Newman",
-    author_email = "gregoryjnewman@gmail.com",
-    url = "http://code.google.com/p/django-socialblog/",
+    author = "CGSwap LLC",
+    author_email = "baffolobill@yandex.ru",
+    url = "https://github.com/baffolobill/django-socialblog/",
     packages = find_packages(),
     classifiers = [
         "Development Status :: Alpha",
@@ -28,10 +28,12 @@ setup(
     ],
     include_package_data = True,
     package_data = { '': PACKAGE_DATA, },
-    #dependency_links = [
-    #    'https://github.com/ProstoKSI/django-voter/archive/master.zip#egg=django-voter',
+    dependency_links = [
+        'https://github.com/ziweizhou/django-taggit/archive/master.zip#egg=django-taggit',
+        'https://github.com/baffolobill/django-voter/archive/master.zip#egg=django-voter',
+        'https://github.com/HonzaKral/django-threadedcomments/archive/master.zip#egg=django-threadedcomments',
     #    'https://github.com/ProstoKSI/html-cleaner/archive/master.zip#egg=html-cleaner',
-    #],
-    install_requires = ['django-atompub', 'Django-Tagging', 'Django-ThreadedComments'],
+    ],
+    install_requires = ['django-taggit', 'django-threadedcomments', 'django-voter'],
     zip_safe = False,
 )

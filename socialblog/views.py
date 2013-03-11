@@ -1,123 +1,145 @@
-from django.shortcuts import render_to_response, get_object_or_404
-from django.http import HttpResponseRedirect, Http404
-from django.template import RequestContext
-from django.core.urlresolvers import reverse
-from django.utils.translation import ugettext_lazy as _
-from django.contrib.auth.models import User
-from django.contrib.auth.decorators import login_required
-from django.views.generic import date_based
+# coding: utf-8
 from django.conf import settings
+from django.contib import messages
+from django.contrib.auth.decorators import login_required
+from django.core.urlresolvers import reverse
+from django.http import Http404
+from django.shortcuts import get_object_or_404, redirect
+from django.template.response import TemplateResponse
+from django.utils.translation import ugettext_lazy as _
+from django.utils.timezone import now as utcnow
+from django.views.generic import DetailView, ListView
 
-from blog.models import Post
-from blog.forms import *
-import datetime
+from voter.models import create_rating
 
-try:
-    from notification import models as notification
-except ImportError:
-    notification = None
+from socialblog.models import Post, Blog
+from socialblog.forms import PostForm
+from socialblog.signals import post_published
+from socialblog.utils import safe_redirect, get_client_ip
 
-try:
-    from friends.models import Friendship
-    friends = True
-except ImportError:
-    friends = False
 
-def blogs(request, username=None):
-    blogs = Post.objects.filter(status=2).order_by("-publish")
-    if username is not None:
-        user = get_object_or_404(User, username=username.lower())
-        blogs = blogs.filter(author=user)
-    return render_to_response("blog/blogs.html", {"blogs": blogs}, context_instance=RequestContext(request))
+## Class-based Views
+class BlogDetail(DetailView):
 
-def post(request, username, year, month, slug):
-    post = Post.objects.filter(slug=slug, publish__year=int(year), publish__month=int(month)).filter(author__username=username)
-    if not post:
-        raise Http404
+    model = Blog
+    template_name = 'socialblog/blog_detail.html'
 
-    return render_to_response("blog/post.html", {
-        "post": post[0],
-    }, context_instance=RequestContext(request))
+    def get_object(self):
+        ct_id = self.kwargs.get('content_type_id', None)
+        object_id = self.kwargs.get('object_id', None)
+        blog_slug = self.kwargs.get('slug', None)
 
-def your_posts(request):
-    user = request.user
-    blogs = Post.objects.filter(author=user)
+        if not (ct_id and object_id and blog_slug):
+            return self.model.objects.none()
 
-    return render_to_response("blog/your_posts.html", {"blogs": blogs}, context_instance=RequestContext(request))
+        return self.model.objects.get(content_type__id=ct_id, \
+                                        object_id=object_id, \
+                                        slug=blog_slug)
+
+    def get_context_data(self, **kwargs):
+        context = super(BlogDetail, self).get_context_data(**kwargs)
+
+        obj = self.get_object()
+        if obj:
+            context['post_list'] = obj.post_list.filter(status=Post.IS_PUBLIC)
+
+        return context
+
+
+class PostDetail(DetailView):
+
+    model = Post
+    template_name = 'socialblog/blog_post_detail.html'
+
+    def get_object(self):
+        """
+        TODO:
+        1) check if post IS_PUBLIC;
+        """
+        ct_id = self.kwargs.get('content_type_id', None)
+        object_id = self.kwargs.get('object_id', None)
+        blog_slug = self.kwargs.get('blog_slug', None)
+        slug = self.kwargs.get('slug', None)
+
+        if not (ct_id and object_id and blog_slug and slug):
+            return self.model.objects.none()
+
+        return self.model.objects.get(blog__content_type__id=ct_id, \
+                                        blog__object_id=object_id, \
+                                        blog__slug=blog_slug, \
+                                        slug=slug, \
+                                        status=Post.IS_PUBLIC)
+
+
+class PostList(ListView):
+
+    queryset = Post.objects.filter(status=Post.IS_PUBLIC)
+    template_name = 'socialblog/post_list.html'
 
 
 @login_required
-def destroy(request, id):
-    post = Post.objects.get(pk=id)
-    user = request.user
-    title = post.title
-    if post.author != request.user:
-            request.user.message_set.create(message="You can't delete posts that aren't yours")
-            return HttpResponseRedirect(reverse("blog_list_yours"))
+def post_change_status(request, action, object_id):
+    post = get_object_or_404(Post, pk=object_id)
+    if not post.can_edit(request.user):
+        messages.error(request, _(u"You can't change status of post that isn't your"))
+    else:
+        if action == 'draft' and post.status == Post.IS_PUBLIC:
+            post.status = Post.IS_DRAFT
+        if action == 'public' and post.status == Post.IS_DRAFT:
+            post.status = Post.IS_PUBLIC
+            post_published.send(sender=Post, post=post)
+        post.save()
+        messages.success(request, _(u"Successfully change status for post '%s'") % post.title)
 
-    if request.method == "POST" and request.POST["action"] == "delete":
+    next = request.GET.get('next', post.blog.get_absolute_url())
+
+    return safe_redirect(next, request)
+
+
+@login_required
+def post_add(request, form_class=PostForm, template_name="socialblog/post_add.html"):
+    post_form = form_class(request)
+    if request.method == "POST" and post_form.is_valid():
+        post = post_form.save(commit=False)
+        post.author = request.user
+        post.rating = create_rating()
+        post.creator_ip = get_client_ip(request)
+        post.save()
+        messages.success(request, _(u"Successfully created post '%s'") % post.title)
+
+        return redirect(post.get_absolute_url())
+
+    return TemplateResponse(request, template_name, \
+        {'post_form': post_form, 'current_user': request.user})
+
+
+@login_required
+def post_edit(request, object_id, form_class=PostForm, template_name="socialblog/post_edit.html"):
+    post = get_object_or_404(Post, pk=object_id)
+    if not post.can_edit(request.user):
+        messages.error(request, _(u"You can't edit posts that aren't yours"))
+        return redirect(post.blog.get_absolute_url())
+
+    post_form = form_class(request, instance=post)
+    if request.method == "POST" and post_form.is_valid():
+        post = post_form.save(commit=False)
+        post.updated = utcnow()
+        post.save()
+
+        messages.success(request, _(u"Successfully updated post '%s'") % post.title)
+
+        return redirect(post.get_absolute_url())
+
+    return TemplateResponse(request, template_name, {"post_form": post_form, "post": post})
+
+
+@login_required
+def post_delete(request, object_id):
+    post = get_object_or_404(Post, pk=object_id)
+    redirect_to = post.blog.get_absolute_url()
+    if not post.can_edit(request.user):
+        messages.error(request, _(u"You can't delete posts that aren't yours"))
+    else:
         post.delete()
-        request.user.message_set.create(message=_("Successfully deleted post '%s'") % title)
-        return HttpResponseRedirect(reverse("blog_list_yours"))
-    else:
-        return HttpResponseRedirect(reverse("blog_list_yours"))
 
-    return render_to_response(context_instance=RequestContext(request))
-
-
-
-@login_required
-def new(request):
-    if request.method == "POST":
-        if request.POST["action"] == "create":
-            blog_form = BlogForm(request.user, request.POST)
-            if blog_form.is_valid():
-                blog = blog_form.save(commit=False)
-                blog.author = request.user
-                if settings.BEHIND_PROXY:
-                    blog.creator_ip = request.META["HTTP_X_FORWARDED_FOR"]
-                else:
-                    blog.creator_ip = request.META['REMOTE_ADDR']
-                blog.save()
-                # @@@ should message be different if published?
-                request.user.message_set.create(message=_("Successfully saved post '%s'") % blog.title)
-                if notification:
-                    if friends: # @@@ might be worth having a shortcut for sending to all friends
-                        notification.send((x['friend'] for x in Friendship.objects.friends_for_user(blog.author)), "blog_friend_post", {"post": blog})
-
-                return HttpResponseRedirect(reverse("blog_list_yours"))
-        else:
-            blog_form = BlogForm()
-    else:
-        blog_form = BlogForm()
-
-    return render_to_response("blog/new.html", {
-        "blog_form": blog_form
-    }, context_instance=RequestContext(request))
-
-@login_required
-def edit(request, id):
-    post = get_object_or_404(Post, id=id)
-
-    if request.method == "POST":
-        if post.author != request.user:
-            request.user.message_set.create(message="You can't edit posts that aren't yours")
-            return HttpResponseRedirect(reverse("blog_list_yours"))
-        if request.POST["action"] == "update":
-            blog_form = BlogForm(request.user, request.POST, instance=post)
-            if blog_form.is_valid():
-                blog = blog_form.save(commit=False)
-                blog.save()
-                request.user.message_set.create(message=_("Successfully updated post '%s'") % blog.title)
-
-                return HttpResponseRedirect(reverse("blog_list_yours"))
-        else:
-            blog_form = BlogForm(instance=post)
-
-    else:
-        blog_form = BlogForm(instance=post)
-
-    return render_to_response("blog/edit.html", {
-        "blog_form": blog_form,
-        "post": post,
-    }, context_instance=RequestContext(request))
+    return redirect(redirect_to)
